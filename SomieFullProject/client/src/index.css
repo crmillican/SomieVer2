@@ -1,0 +1,164 @@
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&family=Poppins:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Paytone+One&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 30 30% 98%;
+  --foreground: 20 10% 15%;
+  
+  --card: 0 0% 100%;
+  --card-foreground: 20 10% 15%;
+  
+  --popover: 0 0% 100%;
+  --popover-foreground: 20 10% 15%;
+  
+  --primary: 25 95% 50%;
+  --primary-foreground: 20 10% 98%;
+  
+  --secondary: 30 30% 94%;
+  --secondary-foreground: 25 80% 40%;
+  
+  --muted: 30 20% 92%;
+  --muted-foreground: 20 10% 40%;
+  
+  --accent: 35 30% 92%;
+  --accent-foreground: 25 80% 40%;
+  
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 98%;
+
+  --border: 30 20% 88%;
+  --input: 30 20% 92%;
+  --ring: 25 95% 50%;
+  
+  --radius: 0.75rem;
+}
+
+.dark {
+  --background: 20 15% 10%;
+  --foreground: 20 5% 95%;
+  
+  --card: 20 15% 12%;
+  --card-foreground: 20 5% 95%;
+  
+  --popover: 20 15% 12%;
+  --popover-foreground: 20 5% 95%;
+  
+  --primary: 25 95% 50%;
+  --primary-foreground: 20 5% 95%;
+  
+  --secondary: 20 15% 20%;
+  --secondary-foreground: 20 5% 95%;
+  
+  --muted: 20 15% 20%;
+  --muted-foreground: 20 5% 64%;
+  
+  --accent: 20 15% 20%;
+  --accent-foreground: 20 5% 95%;
+  
+  --destructive: 0 62% 50%;
+  --destructive-foreground: 20 5% 95%;
+  
+  --border: 20 15% 22%;
+  --input: 20 15% 22%;
+  --ring: 25 95% 50%;
+}
+
+body {
+  @apply bg-background text-foreground;
+  font-family: 'Poppins', sans-serif;
+  background-image: 
+    linear-gradient(to bottom right, rgba(255, 255, 255, 0.4), rgba(255, 255, 255, 0.1)),
+    radial-gradient(at 25% 25%, rgba(255, 210, 180, 0.15) 0%, transparent 50%),
+    radial-gradient(at 75% 75%, rgba(255, 200, 150, 0.1) 0%, transparent 50%);
+  background-attachment: fixed;
+}
+
+.logo {
+  font-family: 'Paytone One', sans-serif;
+  background: linear-gradient(45deg, hsl(25, 95%, 45%), hsl(35, 95%, 55%));
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  text-shadow: 0px 2px 4px rgba(0, 0, 0, 0.1);
+  letter-spacing: 0.05em;
+}
+
+.logo-container {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.logo-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  background: linear-gradient(45deg, hsl(25, 95%, 45%), hsl(35, 95%, 55%));
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.gradient-text {
+  background: linear-gradient(45deg, hsl(25, 95%, 45%), hsl(35, 95%, 55%));
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+.gradient-bg {
+  background: linear-gradient(135deg, rgba(255, 160, 120, 0.1) 0%, rgba(255, 200, 150, 0.1) 100%);
+}
+
+.card-hover {
+  transition: all 0.3s ease;
+}
+
+.card-hover:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--secondary);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: hsl(30, 80%, 75%);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(25, 85%, 65%);
+}
+
+/* Dashboard layout */
+.dashboard-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.5rem;
+  padding: 1.5rem;
+}
+
+@media (min-width: 1024px) {
+  .dashboard-layout {
+    grid-template-columns: repeat(12, 1fr);
+  }
+  
+  .dashboard-sidebar {
+    grid-column: span 3;
+  }
+  
+  .dashboard-main {
+    grid-column: span 9;
+  }
+}

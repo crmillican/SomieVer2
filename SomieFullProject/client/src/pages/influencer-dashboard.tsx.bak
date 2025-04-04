@@ -1,0 +1,958 @@
+import { useAuth } from "@/hooks/use-auth";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useForm } from "react-hook-form";
+import { insertInfluencerProfileSchema, insertPostSubmissionSchema } from "@shared/schema";
+import { Button } from "@/components/ui/button";
+import { MetricInfo } from "@/components/ui/metric-info";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Progress } from "@/components/ui/progress";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Loader2, Inbox, Trophy, Link as LinkIcon, PlusCircle, Trash2 } from "lucide-react";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
+import { Link } from "wouter";
+import { useLocation } from "wouter";
+import { useState, useEffect } from "react";
+import { useOnboarding } from "@/hooks/use-onboarding";
+import { OnboardingModal } from "@/components/onboarding-modal";
+import { SocialHandleInput } from "@/components/ui/social-handle-input";
+
+// Assuming these types are defined elsewhere and need to be imported.  Adjust as needed.
+type InfluencerProfile = {
+  displayName: string;
+  followerCount: number;
+  engagementRate: number;
+  credibilityScore: number;
+  strikes: number;
+  platform?: string; // Added platform property
+  socialUrl: string; // Added socialUrl property
+  // Add other properties as needed
+};
+
+type Offer = {
+  id: number;
+  title: string;
+  description: string;
+  reward: string;
+  postsRequired: number;
+  timeframe: number;
+  category: string;
+  tags: string[];
+  business?: {
+    businessName: string;
+    industry: string;
+    location: string;
+  };
+};
+
+type OfferClaim = {
+  id: number;
+  offerId: number;
+  status: "pending" | "approved" | "completed" | "rejected";
+  createdAt: string;
+  // Add other properties as needed
+};
+
+type PostSubmission = {
+  id: number;
+  claimId: number;
+  postUrl: string;
+  platform: string;
+  verificationStatus: "pending" | "verified" | "failed";
+};
+
+
+const ClaimCard = ({ claim }: { claim: OfferClaim & { offer: Offer | null } }) => {
+  const { toast } = useToast();
+  const postSubmissionForm = useForm({
+    resolver: zodResolver(insertPostSubmissionSchema),
+  });
+
+  const submitPostMutation = useMutation({
+    mutationFn: async ({ claimId, data }: { claimId: number; data: any }) => {
+      const res = await apiRequest("POST", `/api/offers/claims/${claimId}/posts`, data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/offers/claims/influencer"] });
+      postSubmissionForm.reset();
+    },
+    onError: (error) => {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to submit post",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const { data: submissions = [] } = useQuery<PostSubmission[]>({
+    queryKey: [`/api/offers/claims/${claim.id}/posts`],
+    enabled: !!claim.id,
+  });
+
+  const offer = claim.offer;
+  if (!offer) return null;
+
+  return (
+    <Card key={claim.id} className="hover:shadow-lg transition-shadow">
+      <CardHeader>
+        <div className="flex justify-between items-start">
+          <CardTitle className="text-xl font-semibold">{offer.title}</CardTitle>
+          <Badge
+            variant={
+              claim.status === "completed"
+                ? "default"
+                : claim.status === "approved"
+                ? "secondary"
+                : "outline"
+            }
+            className="capitalize"
+          >
+            {claim.status}
+          </Badge>
+        </div>
+        <CardDescription>
+          <div className="mt-2">
+            <p className="text-sm text-gray-600">{offer.description}</p>
+            <div className="flex flex-wrap gap-2 mt-2">
+              <Badge variant="secondary" className="bg-orange-100 text-orange-700">
+                {offer.category}
+              </Badge>
+              {offer.tags?.map((tag) => (
+                <Badge key={tag} variant="outline" className="text-gray-600">
+                  {tag}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <div className="flex justify-between text-sm">
+              <span>Reward:</span>
+              <span className="font-medium">{offer.reward}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span>Deadline:</span>
+              <span className="font-medium">
+                {new Date(
+                  new Date(claim.createdAt).getTime() +
+                    offer.timeframe * 24 * 60 * 60 * 1000
+                ).toLocaleDateString()}
+              </span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span>Business:</span>
+              <span className="font-medium">
+                {offer.business?.businessName}
+              </span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span>Industry:</span>
+              <span className="font-medium">
+                {offer.business?.industry}
+              </span>
+            </div>
+          </div>
+
+          {claim.status === "approved" && (
+            <>
+              <div className="border-t pt-4">
+                <h4 className="font-medium mb-2">Submit Posts</h4>
+                {submissions?.length ?? 0} / {offer.postsRequired} posts submitted
+
+                {(submissions?.length ?? 0) < offer.postsRequired && (
+                  <Form {...postSubmissionForm}>
+                    <form
+                      onSubmit={postSubmissionForm.handleSubmit((data) =>
+                        submitPostMutation.mutate({ claimId: claim.id, data })
+                      )}
+                      className="space-y-4 mt-4"
+                    >
+                      <FormField
+                        control={postSubmissionForm.control}
+                        name="postUrl"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Post URL</FormLabel>
+                            <FormControl>
+                              <Input {...field} placeholder="https://" />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={postSubmissionForm.control}
+                        name="platform"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Platform</FormLabel>
+                            <Select
+                              onValueChange={field.onChange}
+                              defaultValue={field.value}
+                            >
+                              <FormControl>
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Select platform" />
+                                </SelectTrigger>
+                              </FormControl>
+                              <SelectContent>
+                                <SelectItem value="instagram">Instagram</SelectItem>
+                                <SelectItem value="tiktok">TikTok</SelectItem>
+                                <SelectItem value="youtube">YouTube</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <Button
+                        type="submit"
+                        className="w-full"
+                        disabled={submitPostMutation.isPending}
+                      >
+                        {submitPostMutation.isPending && (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        )}
+                        Submit Post
+                      </Button>
+                    </form>
+                  </Form>
+                )}
+              </div>
+
+              {submissions?.length > 0 && (
+                <div className="border-t pt-4">
+                  <h4 className="font-medium mb-2">Submitted Posts</h4>
+                  <div className="space-y-2">
+                    {submissions.map((submission: PostSubmission) => (
+                      <div
+                        key={submission.id}
+                        className="flex items-center justify-between text-sm"
+                      >
+                        <div className="flex items-center">
+                          <LinkIcon className="h-4 w-4 mr-2" />
+                          <a
+                            href={submission.postUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary hover:underline"
+                          >
+                            {submission.platform}
+                          </a>
+                        </div>
+                        <Badge
+                          variant={
+                            submission.verificationStatus === "verified"
+                              ? "default"
+                              : submission.verificationStatus === "failed"
+                              ? "destructive"
+                              : "secondary"
+                          }
+                        >
+                          {submission.verificationStatus}
+                        </Badge>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
+export default function InfluencerDashboard() {
+  const { user, logoutMutation } = useAuth();
+  const { toast } = useToast();
+  const [, navigate] = useLocation();
+  const [additionalPlatforms, setAdditionalPlatforms] = useState<string[]>([]);
+  const [socialMetrics, setSocialMetrics] = useState<{
+    followers: number;
+    engagementRate: number;
+    displayName?: string;
+  } | null>(null);
+  const [isLoadingMetrics, setIsLoadingMetrics] = useState(false);
+  const { showOnboarding, setShowOnboarding, completeOnboarding } = useOnboarding();
+
+  const { data: profile, isLoading: profileLoading } = useQuery<InfluencerProfile>({
+    queryKey: ["/api/influencer-profile"],
+    enabled: !!user,
+    staleTime: 5 * 60 * 1000, // Consider data fresh for 5 minutes
+    gcTime: 30 * 60 * 1000, // Keep data in cache for 30 minutes
+  });
+
+  const { data: offers, isLoading: offersLoading } = useQuery<Offer[]>({
+    queryKey: ["/api/offers"],
+    enabled: !!user,
+  });
+
+  const { data: claims, isLoading: claimsLoading } = useQuery<(OfferClaim & { offer: Offer | null })[]>({
+    queryKey: ["/api/offers/claims/influencer"],
+    enabled: !!user,
+  });
+
+  const profileForm = useForm({
+    resolver: zodResolver(insertInfluencerProfileSchema),
+    defaultValues: {
+      displayName: "",
+      followerCount: 0,
+      engagementRate: 0,
+      platform: 'instagram' as 'instagram' | 'tiktok' | 'youtube',
+      socialUrl: "",
+      socialHandle: "",
+      bio: "",
+    },
+  });
+  
+  // Set metrics from social media API when available
+  useEffect(() => {
+    if (socialMetrics) {
+      profileForm.setValue('followerCount', socialMetrics.followers);
+      profileForm.setValue('engagementRate', socialMetrics.engagementRate);
+      
+      // If display name is not yet set and we have one from social media, use it
+      if (!profileForm.getValues('displayName') && socialMetrics.displayName) {
+        profileForm.setValue('displayName', socialMetrics.displayName);
+      }
+    }
+  }, [socialMetrics, profileForm]);
+  
+  // Function to fetch social media metrics when URL changes
+  const fetchSocialMetrics = async (url: string, platform: string) => {
+    if (!url || !platform) return;
+    
+    try {
+      setIsLoadingMetrics(true);
+      const response = await apiRequest('POST', '/api/social-metrics/url', { profileUrl: url });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Error fetching social metrics:', errorData);
+        return;
+      }
+      
+      const data = await response.json();
+      console.log('Fetched social metrics:', data);
+      
+      if (data.status === 'success' && data.data) {
+        setSocialMetrics({
+          followers: data.data.followers,
+          engagementRate: data.data.engagementRate,
+          displayName: data.data.displayName
+        });
+        
+        toast({
+          title: "Metrics fetched",
+          description: `Successfully retrieved your social media metrics: ${data.data.followers.toLocaleString()} followers, ${data.data.engagementRate}% engagement`,
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching social metrics:', error);
+    } finally {
+      setIsLoadingMetrics(false);
+    }
+  };
+  
+  // Watch for URL changes to fetch metrics
+  const socialUrl = profileForm.watch('socialUrl');
+  const platform = profileForm.watch('platform');
+  
+  // Debounce the metrics fetch to avoid too many API calls
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (socialUrl && platform && socialUrl.includes('http')) {
+        fetchSocialMetrics(socialUrl, platform);
+      }
+    }, 1000); // Wait 1 second after user stops typing
+    
+    return () => clearTimeout(timer);
+  }, [socialUrl, platform]);
+
+  const createProfileMutation = useMutation({
+    mutationFn: async (data: any) => {
+      try {
+        // Make sure the socialHandle field is set
+        const currentPlatform = data.platform;
+        const finalData = {...data};
+        
+        // Ensure the socialHandle field is set correctly based on the selected platform
+        if (!finalData.socialHandle && currentPlatform) {
+          if (currentPlatform === 'instagram' && finalData.instagramHandle) {
+            finalData.socialHandle = finalData.instagramHandle;
+          } else if (currentPlatform === 'tiktok' && finalData.tiktokHandle) {
+            finalData.socialHandle = finalData.tiktokHandle;
+          } else if (currentPlatform === 'youtube' && finalData.youtubeHandle) {
+            finalData.socialHandle = finalData.youtubeHandle;
+          }
+        }
+        
+        console.log('Attempting to create profile with data:', finalData);
+        const res = await apiRequest("POST", "/api/influencer-profile", finalData);
+        if (!res.ok) {
+          const error = await res.json();
+          console.error('Profile creation failed:', error);
+          throw new Error(error.message || "Failed to create profile");
+        }
+        const profile = await res.json();
+        console.log('Profile created successfully:', profile);
+        return profile;
+      } catch (error) {
+        console.error('Error creating profile:', error);
+        throw error;
+      }
+    },
+    onSuccess: (data) => {
+      console.log('Profile creation mutation succeeded:', data);
+      // Update the profile query cache with the new data
+      queryClient.setQueryData(["/api/influencer-profile"], data);
+      // Invalidate and refetch to ensure fresh data
+      queryClient.invalidateQueries({ queryKey: ["/api/influencer-profile"] });
+      // Show success message
+      toast({
+        title: "Success",
+        description: "Your influencer profile has been created!",
+      });
+      // Clear form data
+      profileForm.reset();
+    },
+    onError: (error) => {
+      console.error('Profile creation mutation failed:', error);
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to create profile",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const submitPostMutation = useMutation({
+    mutationFn: async ({ claimId, data }: { claimId: number; data: any }) => {
+      const res = await apiRequest("POST", `/api/offers/claims/${claimId}/posts`, data);
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/offers/claims/influencer"] });
+    },
+    onError: (error) => {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to submit post",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const claimOfferMutation = useMutation({
+    mutationFn: async (offerId: number) => {
+      const res = await apiRequest("POST", `/api/offers/${offerId}/claims`);
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.message || "Failed to claim offer");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/offers/claims/influencer"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/offers"] });
+    },
+    onError: (error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const getPostSubmissions = async (claimId: number) => {
+    const res = await apiRequest("GET", `/api/offers/claims/${claimId}/posts`);
+    return await res.json();
+  };
+
+  const addPlatform = () => {
+    const currentPlatform = profileForm.getValues("platform");
+    if (currentPlatform && !additionalPlatforms.includes(currentPlatform)) {
+      setAdditionalPlatforms([...additionalPlatforms, currentPlatform]);
+    }
+  };
+
+  const removePlatform = (platform: string) => {
+    setAdditionalPlatforms(additionalPlatforms.filter((p) => p !== platform));
+  };
+
+  if (profileLoading || offersLoading || claimsLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  if (!profile) {
+    return (
+      <div className="container max-w-lg mx-auto p-6">
+        <Card>
+          <CardHeader>
+            <CardTitle>Complete Your Influencer Profile</CardTitle>
+            <CardDescription>
+              Add your primary social media platform to get started
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Form {...profileForm}>
+              <form
+                onSubmit={profileForm.handleSubmit((data) =>
+                  createProfileMutation.mutate(data)
+                )}
+                className="space-y-4"
+              >
+                <FormField
+                  control={profileForm.control}
+                  name="displayName"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Display Name</FormLabel>
+                      <FormControl>
+                        <Input {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={profileForm.control}
+                  name="platform"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Primary Platform</FormLabel>
+                      <Select
+                        onValueChange={(value) => {
+                          field.onChange(value);
+                          // Reset socialUrl when platform changes
+                          profileForm.setValue('socialUrl', '');
+                          // Reset metrics-related fields when platform changes
+                          profileForm.setValue('followerCount', 0);
+                          profileForm.setValue('engagementRate', 0);
+                        }}
+                        defaultValue={field.value}
+                      >
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select your main platform" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          <SelectItem value="instagram">Instagram</SelectItem>
+                          <SelectItem value="tiktok">TikTok</SelectItem>
+                          <SelectItem value="youtube">YouTube</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={profileForm.control}
+                  name="socialHandle"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>
+                        Your {profileForm.watch("platform") || "social media"} handle
+                      </FormLabel>
+                      <div className="space-y-2">
+                        {profileForm.watch("platform") ? (
+                          <SocialHandleInput
+                            platform={(profileForm.watch("platform") || 'instagram') as 'instagram' | 'tiktok' | 'youtube'}
+                            value={field.value}
+                            onChange={(value) => field.onChange(value)}
+                            onMetricsFound={(metrics: any) => {
+                              // Auto-fill form fields with fetched metrics
+                              profileForm.setValue('displayName', metrics.displayName || '');
+                              profileForm.setValue('socialUrl', metrics.profileUrl || '');
+                              profileForm.setValue('socialHandle', metrics.username || field.value);
+                              profileForm.setValue('followerCount', metrics.followers || 0);
+                              profileForm.setValue('engagementRate', metrics.engagementRate || 0);
+                              
+                              // No need to set platform-specific handle fields
+                              // The socialHandle field will be transformed by the schema
+                              
+                              // Update bio field with a suggestion based on metrics
+                              const currentPlatform = profileForm.getValues('platform');
+                              if (!profileForm.getValues('bio') && currentPlatform) {
+                                const platformName = currentPlatform.charAt(0).toUpperCase() + 
+                                  currentPlatform.slice(1);
+                                profileForm.setValue(
+                                  'bio', 
+                                  `${platformName} creator with ${metrics.followers.toLocaleString()} followers. ${
+                                    metrics.verified ? 'Verified creator.' : ''
+                                  }`
+                                );
+                              }
+                            }}
+                            className="mb-2"
+                          />
+                        ) : (
+                          <FormControl>
+                            <Input 
+                              {...field} 
+                              placeholder="Enter your social media handle (e.g. @username)"
+                            />
+                          </FormControl>
+                        )}
+                        <FormDescription className="text-xs">
+                          Enter your handle to auto-fill your profile information
+                        </FormDescription>
+                        <FormMessage />
+                      </div>
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={profileForm.control}
+                  name="socialUrl"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Profile URL</FormLabel>
+                      <FormControl>
+                        <Input
+                          placeholder={`Your ${profileForm.watch("platform") || "social media"} profile URL will be filled automatically`}
+                          {...field}
+                          readOnly
+                          className="bg-muted/50"
+                        />
+                      </FormControl>
+                      <FormDescription className="text-xs">
+                        This URL is filled automatically when you verify your handle
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                {additionalPlatforms.map((platform) => (
+                  <div key={platform} className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <FormLabel>{platform} Profile</FormLabel>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => removePlatform(platform)}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                    <FormField
+                      control={profileForm.control}
+                      name={`${platform.toLowerCase()}Url`}
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormControl>
+                            <Input placeholder={`Enter your ${platform} profile URL`} {...field} />
+                          </FormControl>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                  </div>
+                ))}
+
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full"
+                  onClick={addPlatform}
+                >
+                  <PlusCircle className="mr-2 h-4 w-4" />
+                  Add Another Platform
+                </Button>
+
+                <FormField
+                  control={profileForm.control}
+                  name="bio"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Your Bio</FormLabel>
+                      <FormControl>
+                        <Textarea
+                          placeholder="Tell us about yourself and your content"
+                          className="resize-none"
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormDescription className="text-xs">
+                        Your bio will be shown to businesses looking for influencers
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <FormField
+                    control={profileForm.control}
+                    name="followerCount"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel className="flex items-center">
+                          Total Follower Count
+                          {isLoadingMetrics && <Loader2 className="ml-2 h-3 w-3 animate-spin text-muted-foreground" />}
+                        </FormLabel>
+                        <FormControl>
+                          <Input
+                            type="number"
+                            {...field}
+                            disabled={isLoadingMetrics}
+                            onChange={(e) =>
+                              field.onChange(parseInt(e.target.value))
+                            }
+                          />
+                        </FormControl>
+                        <FormMessage />
+                        {socialMetrics && (
+                          <p className="text-xs text-muted-foreground">
+                            Auto-detected from your social profile
+                          </p>
+                        )}
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={profileForm.control}
+                    name="engagementRate"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel className="flex items-center">
+                          Engagement Rate (%)
+                          {isLoadingMetrics && <Loader2 className="ml-2 h-3 w-3 animate-spin text-muted-foreground" />}
+                        </FormLabel>
+                        <FormControl>
+                          <Input
+                            type="number"
+                            {...field}
+                            disabled={isLoadingMetrics}
+                            onChange={(e) =>
+                              field.onChange(parseInt(e.target.value))
+                            }
+                          />
+                        </FormControl>
+                        <FormMessage />
+                        {socialMetrics && (
+                          <p className="text-xs text-muted-foreground">
+                            Auto-detected from your social profile
+                          </p>
+                        )}
+                      </FormItem>
+                    )}
+                  />
+                </div>
+
+                <Button
+                  type="submit"
+                  className="w-full"
+                  disabled={createProfileMutation.isPending}
+                >
+                  {createProfileMutation.isPending && (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  )}
+                  Create Profile
+                </Button>
+              </form>
+            </Form>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  // Add useEffect for onboarding
+  useEffect(() => {
+    // Show onboarding after a small delay to ensure page is loaded
+    const timer = setTimeout(() => {
+      setShowOnboarding(true);
+    }, 500);
+    
+    return () => clearTimeout(timer);
+  }, [setShowOnboarding]);
+
+  return (
+    <div className="min-h-screen bg-background">
+      <div className="container mx-auto p-6">
+        {/* Onboarding Modal */}
+        <OnboardingModal 
+          isOpen={showOnboarding} 
+          onClose={() => completeOnboarding()} 
+          userType="influencer" 
+        />
+        
+        <div className="flex justify-between items-center mb-6">
+          <div>
+            <h1 className="text-2xl font-bold">{profile.displayName}</h1>
+            <p className="text-muted-foreground">
+              {profile.followerCount.toLocaleString()} followers •{" "}
+              {profile.engagementRate}% engagement
+            </p>
+          </div>
+          <Button variant="outline" onClick={() => logoutMutation.mutate()}>
+            Logout
+          </Button>
+        </div>
+
+        <div className="grid gap-6 md:grid-cols-3 mb-6">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium">
+                Credibility Score
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <MetricInfo
+                label="Credibility Score"
+                tooltip="Your credibility score is calculated based on successful campaign completions, post authenticity, and engagement metrics. A higher score increases your chances of being selected for premium campaigns."
+                value={`${profile.credibilityScore}/100`}
+                onClick={() => navigate("/metrics/credibility")}
+              />
+              <Progress
+                value={profile.credibilityScore}
+                className="h-2 mt-2"
+              />
+              <p className="text-xs text-muted-foreground mt-2">
+                Complete deals to increase your score
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium">
+                Completed Deals
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <MetricInfo
+                label="Completed Deals"
+                tooltip="The total number of successfully completed promotional campaigns. Completing more deals increases your credibility score and unlocks access to higher-value opportunities."
+                value={claims?.filter((claim) => claim.status === "completed").length ?? 0}
+                onClick={() => navigate("/metrics/claims")}
+              />
+              <p className="text-xs text-muted-foreground mt-2">
+                Total successful promotions
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium">Strikes</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <MetricInfo
+                label="Account Strikes"
+                tooltip="Strikes are issued for policy violations, missed deadlines, or failed post verifications. Accumulating 3 strikes may result in temporary account suspension."
+                value={`${profile.strikes}/3`}
+                onClick={() => navigate("/metrics/strikes")}
+              />
+              <p className="text-xs text-muted-foreground mt-2">
+                Avoid missing deadlines
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+
+        <Tabs defaultValue="offers">
+          <TabsList>
+            <TabsTrigger value="offers">
+              <Inbox className="h-4 w-4 mr-2" />
+              Available Offers
+            </TabsTrigger>
+            <TabsTrigger value="active">
+              <Trophy className="h-4 w-4 mr-2" />
+              Active Deals
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="offers" className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {offers?.map((offer) => (
+                <Link key={offer.id} href={`/offers/${offer.id}`}>
+                  <Card className="hover:shadow-lg transition-shadow cursor-pointer">
+                    <CardHeader>
+                      <div className="flex flex-col space-y-1.5">
+                        <CardTitle>{offer.title}</CardTitle>
+                        <CardDescription>
+                          {offer.business?.businessName} • {offer.business?.industry}
+                        </CardDescription>
+                      </div>
+                      <div className="flex flex-wrap gap-2 mt-2">
+                        <Badge variant="secondary">{offer.category}</Badge>
+                        {offer.tags?.map((tag) => (
+                          <Badge key={tag} variant="outline">
+                            {tag}
+                          </Badge>
+                        ))}
+                      </div>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-2">
+                        <p className="text-sm text-muted-foreground">{offer.description}</p>
+                        <div className="flex justify-between text-sm">
+                          <span>Reward:</span>
+                          <span className="font-medium">{offer.reward}</span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span>Posts Required:</span>
+                          <span className="font-medium">
+                            {offer.postsRequired} posts
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span>Timeframe:</span>
+                          <span className="font-medium">
+                            {offer.timeframe} days
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span>Location:</span>
+                          <span className="font-medium">
+                            {offer.business?.location}
+                          </span>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </Link>
+              ))}
+            </div>
+          </TabsContent>
+
+          <TabsContent value="active">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {claims?.map((claim) => (
+                <Link key={claim.id} href={`/deals/${claim.id}`}>
+                  <ClaimCard claim={claim} />
+                </Link>
+              ))}
+            </div>
+          </TabsContent>
+        </Tabs>
+      </div>
+    </div>
+  );
+}

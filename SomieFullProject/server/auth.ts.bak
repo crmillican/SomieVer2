@@ -1,0 +1,533 @@
+import passport from "passport";
+import { Strategy as LocalStrategy } from "passport-local";
+import { Express, Request, Response, NextFunction } from "express";
+import session from "express-session";
+import { scrypt, randomBytes, timingSafeEqual } from "crypto";
+import { promisify } from "util";
+import { storage } from "./storage";
+import { User as SelectUser } from "@shared/schema";
+
+declare global {
+  namespace Express {
+    interface User extends SelectUser {}
+  }
+}
+
+// Extend the express-session module's SessionData interface
+declare module "express-session" {
+  interface SessionData {
+    userId?: number;
+  }
+}
+
+const scryptAsync = promisify(scrypt);
+
+async function hashPassword(password: string) {
+  const salt = randomBytes(16).toString("hex");
+  const buf = (await scryptAsync(password, salt, 64)) as Buffer;
+  return `${buf.toString("hex")}.${salt}`;
+}
+
+async function comparePasswords(supplied: string, stored: string) {
+  if (!stored.includes('.')) {
+    throw new Error("Invalid password format");
+  }
+  const [hashed, salt] = stored.split(".");
+  const hashedBuf = Buffer.from(hashed, "hex");
+  const suppliedBuf = (await scryptAsync(supplied, salt, 64)) as Buffer;
+  return timingSafeEqual(hashedBuf, suppliedBuf);
+}
+
+
+
+// Authentication middleware - can be used on any route that requires auth
+export const ensureAuthenticated = (req: any, res: any, next: any) => {
+  // Log detailed session info for debugging
+  console.log('Auth check for request to:', req.originalUrl, {
+    sessionID: req.sessionID,
+    hasSession: Boolean(req.session),
+    isAuthenticated: req.isAuthenticated(),
+    hasUser: Boolean(req.user),
+    userId: req.user?.id,
+    sessionUserId: req.session?.userId,
+    cookies: req.headers.cookie || 'no cookies',
+    origin: req.headers.origin || 'unknown'
+  });
+  
+  // Extra logging for debugging cookie transmission
+  if (req.headers.cookie) {
+    const cookieSegments = req.headers.cookie.split(';').map((c: string) => c.trim());
+    console.log('Parsed cookies:', cookieSegments);
+    const sessionCookie = cookieSegments.find((c: string) => c.startsWith('somie.sid='));
+    if (sessionCookie) {
+      console.log('Found session cookie:', sessionCookie);
+    } else {
+      console.log('No session cookie found in request');
+    }
+  }
+  
+  // Check if user is authenticated via Passport.js
+  if (req.isAuthenticated()) {
+    console.log('Passport authentication successful, proceeding with request');
+    return next(); // Continue if authenticated
+  }
+  
+  // If not authenticated but we have a userId in session, try to restore the session
+  if (req.session && req.session.userId) {
+    const userId = req.session.userId;
+    console.log('Session exists with userId but not authenticated, attempting to restore:', userId);
+    
+    // Attempt to restore the session by manually serializing the user into req.user
+    storage.getUser(userId)
+      .then(user => {
+        if (user) {
+          console.log('User found, restoring session manually:', user.id);
+          req.user = user;
+          
+          // Prevent session regeneration during re-login
+          const restoreRegeneration = preventSessionRegeneration(req);
+          
+          // Attempt to re-establish passport session
+          req.login(user, (loginErr: Error) => {
+            // Restore original regeneration method
+            restoreRegeneration();
+            
+            if (loginErr) {
+              console.error('Failed to re-establish passport session:', loginErr);
+              // Continue anyway with our manual user assignment
+            } else {
+              console.log('Re-established passport session for user:', user.id);
+              
+              // Set session cookie explicitly to refresh it client-side
+              res.setHeader('Set-Cookie', `somie.sid=${req.sessionID}; Path=/; HttpOnly; SameSite=None; Max-Age=2592000`);
+              
+              // Flag in headers that we recovered the session
+              res.setHeader('X-Session-Recovered', 'true');
+              res.setHeader('X-Auth-User-ID', user.id.toString());
+            }
+            next();
+          });
+        } else {
+          console.log('User not found for session userId:', userId);
+          
+          // Clear invalid session data
+          req.session.userId = undefined;
+          req.session.save();
+          
+          res.status(401).json({ message: "Not authenticated" });
+        }
+      })
+      .catch(err => {
+        console.error('Error restoring session:', err);
+        res.status(401).json({ message: "Authentication error" });
+      });
+    return;
+  }
+  
+  // Extra check: Look for session ID cookie and try to load the session directly
+  if (req.headers.cookie && req.headers.cookie.includes('somie.sid=')) {
+    console.log('Found session cookie but no session data loaded, possible store issue');
+    
+    // Include cookie debugging info in response headers
+    res.setHeader('X-Session-Debug', 'cookie-present-but-no-session-data');
+    
+    // We could attempt to get the session directly from the store here
+    // But for now just report the issue
+  }
+  
+  // No authentication and no session
+  console.log('User not authenticated and no session found');
+  res.status(401).json({ message: "Not authenticated" });
+};
+
+// Helper function to prevent session regeneration
+function preventSessionRegeneration(req: any): () => void {
+  const originalRegenerateMethod = req.session.regenerate;
+  // @ts-ignore - Deliberately overriding for session flow control
+  req.session.regenerate = function(callback: any) {
+    console.log("Session regeneration prevented during login");
+    if (callback) callback(null);
+    return req.session;
+  };
+  
+  // Return a function to restore the original method
+  return () => {
+    req.session.regenerate = originalRegenerateMethod;
+  };
+}
+
+// Helper to ensure session is correctly established and cookies set before responding
+function ensureSession(req: any, res: any, user: any, statusCode: number, callback: () => void) {
+  console.log("Ensuring session is correctly established for user:", user.id);
+  
+  // First verify the session exists and contains the expected userId
+  if (!req.session) {
+    console.error("No session object available during ensureSession!");
+    callback();
+    return;
+  }
+  
+  // Ensure userId is set in session
+  if (req.session.userId !== user.id) {
+    console.log("Correcting session userId mismatch:", { 
+      sessionUserId: req.session.userId, 
+      actualUserId: user.id 
+    });
+    req.session.userId = user.id;
+  }
+  
+  // Add session cookie info to headers (redundant but ensuring it's here too)
+  res.setHeader('X-Auth-User-ID', user.id.toString());
+  res.setHeader('X-Session-ID', req.sessionID);
+  
+  // Set secure cookie for development/production without SSL
+  const cookieOptions = {
+    path: '/',
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax' as const,
+    maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
+  };
+  
+  res.cookie('somie.sid', req.sessionID, cookieOptions);
+  
+  // Save session to ensure it's persisted before responding
+  req.session.save((err: Error) => {
+    if (err) {
+      console.error("Failed to save session in ensureSession:", err);
+    } else {
+      console.log("Session successfully saved with userId:", user.id);
+    }
+    
+    // Continue with the original callback regardless
+    callback();
+  });
+}
+
+export function setupAuth(app: Express) {
+  // Configure session middleware with optimized settings for our PostgreSQL session store
+  const sessionSettings: session.SessionOptions = {
+    secret: process.env.SESSION_SECRET || 'dev-secret-key',
+    // Set resave to true to ensure session is saved on every response
+    resave: true,
+    // Save uninitialized sessions to ensure cookie is set immediately
+    saveUninitialized: true,
+    // Use our PostgreSQL session store
+    store: storage.sessionStore,
+    // Custom cookie name for better identification
+    name: "somie.sid",
+    cookie: {
+      // Set to false in development to work without HTTPS
+      secure: process.env.NODE_ENV === 'production',
+      // Prevent client-side JS from accessing the cookie
+      httpOnly: true,
+      // Use 'lax' to ensure it works in all browsers
+      sameSite: "lax",
+      // 30 days session lifetime
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+      // Make cookie available for all paths
+      path: '/',
+      // Domain setting - leave empty to use the default domain
+      domain: undefined
+    },
+    // Rolling session - update expiration with each response
+    rolling: true
+  };
+  
+  // Log session configuration
+  console.log("Session configuration:", {
+    mode: process.env.NODE_ENV || 'development',
+    cookieSecure: process.env.NODE_ENV === 'production',
+    cookieSameSite: "lax",
+    sessionSecret: (process.env.SESSION_SECRET || 'dev-secret-key').substring(0, 3) + '***',
+    maxAge: '30 days'
+  });
+
+  app.set("trust proxy", 1);
+  app.use(session(sessionSettings));
+  app.use(passport.initialize());
+  app.use(passport.session());
+
+  passport.use(
+    new LocalStrategy(async (username: string, password: string, done) => {
+      try {
+        const user = await storage.getUserByUsername(username);
+        if (!user || !(await comparePasswords(password, user.password))) {
+          return done(null, false, { message: "Invalid username or password" });
+        }
+        return done(null, user);
+      } catch (error) {
+        return done(error);
+      }
+    }),
+  );
+
+  passport.serializeUser((user, done) => {
+    console.log("Serializing user to session:", user.id);
+    done(null, user.id);
+  });
+  
+  passport.deserializeUser(async (id: number, done) => {
+    console.log("Deserializing user from session ID:", id);
+    try {
+      const user = await storage.getUser(id);
+      if (!user) {
+        console.log("User not found during deserialization:", id);
+        return done(null, false);
+      }
+      console.log("Successfully deserialized user:", user.id);
+      done(null, user);
+    } catch (error) {
+      console.error("Error during user deserialization:", error);
+      done(error);
+    }
+  });
+
+  app.post("/api/register", async (req, res, next) => {
+    try {
+      // Log important session information for debugging
+      const originalSessionID = req.sessionID;
+      console.log("Register endpoint called with:", {
+        body: req.body,
+        session: req.session,
+        sessionID: originalSessionID,
+        cookies: req.headers.cookie
+      });
+      
+      const { username, password, userType } = req.body;
+
+      if (!username || !password || !userType) {
+        console.log("Registration failed: Missing required fields");
+        return res.status(400).json({ 
+          message: "Missing required fields. Please provide username, password, and userType." 
+        });
+      }
+
+      if (!['business', 'influencer'].includes(userType)) {
+        console.log("Registration failed: Invalid user type", userType);
+        return res.status(400).json({ 
+          message: "Invalid user type. Must be either 'business' or 'influencer'." 
+        });
+      }
+
+      const existingUser = await storage.getUserByUsername(username);
+      if (existingUser) {
+        console.log("Registration failed: Username already exists", username);
+        return res.status(400).json({ message: "Username already exists" });
+      }
+
+      console.log("Creating new user:", username);
+      const user = await storage.createUser({
+        username,
+        password: await hashPassword(password),
+        userType,
+        createdAt: new Date(),
+        isTest: false
+      });
+
+      console.log("User created, setting up session for user:", user.id);
+      
+      // Save user ID to session explicitly before login
+      if (!req.session) {
+        console.error("No session object available!");
+      } else {
+        req.session.userId = user.id;
+        
+        // Ensure the session is stored before proceeding
+        await new Promise<void>((resolve, reject) => {
+          req.session.save((err) => {
+            if (err) {
+              console.error("Failed to save session before login:", err);
+              reject(err);
+            } else {
+              console.log("Session saved with userId before login");
+              resolve();
+            }
+          });
+        });
+      }
+      
+      // Prevent session regeneration during passport login
+      const restoreRegeneration = preventSessionRegeneration(req);
+      
+      // Then use Passport's login for proper authentication
+      req.login(user, (err) => {
+        // Restore the original regenerate method
+        restoreRegeneration();
+        
+        if (err) {
+          console.error("Login after registration failed:", err);
+          return next(err);
+        }
+        
+        console.log("Login successful, comparing session IDs:", {
+          original: originalSessionID,
+          current: req.sessionID
+        });
+        
+        // Only send safe user data
+        const { password: _, ...safeUser } = user;
+        
+        // Add session cookie info to headers
+        res.setHeader('X-Auth-User-ID', user.id.toString());
+        res.setHeader('X-Session-ID', req.sessionID);
+        // Set cookie explicitly to ensure proper transmission
+        res.setHeader('Set-Cookie', `somie.sid=${req.sessionID}; Path=/; HttpOnly; SameSite=None; Max-Age=2592000`);
+        
+        // Use helper function to ensure session is properly established
+        ensureSession(req, res, user, 201, () => {
+          console.log('Registration complete, sending response with session ID:', req.sessionID);
+          res.status(201).json({
+            ...safeUser,
+            _sessionId: req.sessionID // For debugging only
+          });
+        });
+      });
+    } catch (error) {
+      console.error("Registration error:", error);
+      next(error);
+    }
+  });
+
+  app.post("/api/login", (req, res, next) => {
+    // Log important session information for debugging
+    const originalSessionID = req.sessionID;
+    console.log("Login endpoint called with:", {
+      body: req.body,
+      session: req.session,
+      sessionID: originalSessionID,
+      cookies: req.headers.cookie
+    });
+
+    passport.authenticate("local", async (err: Error | null, user: Express.User | false, info: { message: string } | undefined) => {
+      if (err) {
+        console.error("Authentication error:", err);
+        return next(err);
+      }
+      
+      if (!user) {
+        console.log("Authentication failed:", info?.message);
+        return res.status(401).json({ message: info?.message || "Authentication failed" });
+      }
+      
+      console.log("User authenticated, setting up session:", {
+        userId: (user as any).id,
+        sessionID: req.sessionID
+      });
+      
+      // Save user ID to session explicitly before login
+      if (!req.session) {
+        console.error("No session object available during login!");
+      } else {
+        req.session.userId = (user as any).id;
+        
+        // Ensure the session is stored before proceeding
+        try {
+          await new Promise<void>((resolve, reject) => {
+            req.session.save((err) => {
+              if (err) {
+                console.error("Failed to save session before login:", err);
+                reject(err);
+              } else {
+                console.log("Session saved with userId before login");
+                resolve();
+              }
+            });
+          });
+        } catch (saveError) {
+          console.error("Error saving session:", saveError);
+          // Continue anyway, as req.login may still work
+        }
+      }
+      
+      // Prevent session regeneration during passport login
+      const restoreRegeneration = preventSessionRegeneration(req);
+      
+      req.login(user, (err) => {
+        // Restore the original regenerate method
+        restoreRegeneration();
+        
+        if (err) {
+          console.error("Login session creation failed:", err);
+          return next(err);
+        }
+        
+        console.log("Login successful, comparing session IDs:", {
+          original: originalSessionID,
+          current: req.sessionID
+        });
+        
+        // Only send safe user data
+        const { password: _, ...safeUser } = user;
+        
+        // Add session cookie info to headers
+        res.setHeader('X-Auth-User-ID', (user as any).id.toString());
+        res.setHeader('X-Session-ID', req.sessionID);
+        // Set cookie explicitly to ensure proper transmission
+        res.setHeader('Set-Cookie', `somie.sid=${req.sessionID}; Path=/; HttpOnly; SameSite=None; Max-Age=2592000`);
+        
+        // Use helper function to ensure session is properly established
+        ensureSession(req, res, user, 200, () => {
+          console.log('Login complete, sending response with session ID:', req.sessionID);
+          res.status(200).json({
+            ...safeUser,
+            _sessionId: req.sessionID // For debugging only
+          });
+        });
+      });
+    })(req, res, next);
+  });
+
+  app.post("/api/logout", (req, res, next) => {
+    console.log("Logout requested for session:", req.sessionID);
+    
+    if (!req.isAuthenticated()) {
+      console.log("User not authenticated, nothing to logout");
+      return res.sendStatus(200);
+    }
+    
+    const userId = req.user?.id;
+    console.log("Logging out user:", userId);
+    
+    // First call passport's logout
+    req.logout((err) => {
+      if (err) {
+        console.error("Error during logout:", err);
+        return next(err);
+      }
+      
+      // Then destroy the session completely for a clean logout
+      req.session.destroy((sessionErr) => {
+        if (sessionErr) {
+          console.error("Error destroying session:", sessionErr);
+          // Continue anyway as we've already logged out from passport
+        } else {
+          console.log("Session successfully destroyed");
+        }
+        
+        // Clear the cookie on the client side
+        res.clearCookie("somie.sid");
+        res.sendStatus(200);
+      });
+    });
+  });
+
+  app.get("/api/user", (req, res) => {
+    console.log("GET /api/user called:", {
+      sessionID: req.sessionID,
+      isAuthenticated: req.isAuthenticated(),
+      hasSessionUser: Boolean(req.user),
+      session: req.session
+    });
+    
+    if (!req.isAuthenticated()) {
+      console.log("User not authenticated, no session found");
+      return res.status(401).json({ message: "Not authenticated" });
+    }
+    
+    // Only send safe user data
+    const { password: _, ...safeUser } = req.user as Express.User;
+    console.log("User authenticated, returning data for user:", safeUser.id);
+    res.json(safeUser);
+  });
+}
